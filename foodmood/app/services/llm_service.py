@@ -24,20 +24,23 @@ PARSE_PROMPT_TEMPLATE = """Analyse this meal description and return a JSON objec
       "fat_g": number
     }}
   ],
-  "ai_feedback": "string - 2-3 sentence nutritional assessment of the overall meal"
+  "ai_feedback": "string - 2-3 sentence nutritional assessment",
+  "is_valid_meal": boolean
 }}
 
 Meal description: "{meal_description}"
 
 Rules:
-- Estimate realistic calories and macros based on typical serving sizes.
-- If a quantity is ambiguous, use a standard/average portion.
-- ai_feedback must be specific to THIS meal (mention actual foods).
+- ONLY parse REAL FOOD ITEMS
+- If input is NOT about food (e.g. "car", "xyz", "hello"), return empty food_items and is_valid_meal=false
+- For real meals, estimate realistic calories and macros
+- ai_feedback must be specific to actual foods mentioned
 - Return ONLY the JSON object, nothing else.
 """
 
 
 async def parse_meal_with_llm(meal_description: str) -> dict:
+    """Call OpenRouter to parse a meal description. Returns parsed dict."""
     prompt = PARSE_PROMPT_TEMPLATE.format(meal_description=meal_description)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -62,11 +65,36 @@ async def parse_meal_with_llm(meal_description: str) -> dict:
 
     data = response.json()
     raw_text = data["choices"][0]["message"]["content"].strip()
-    return _extract_json(raw_text)
+    result = _extract_json(raw_text)
+    
+    if not _is_valid_food_meal(result):
+        raise ValueError(
+            "Invalid input: Please describe a real meal with food items. "
+            "Example: '2 eggs, toast, avocado' or 'chicken salad'"
+        )
+    
+    return result
+
+
+def _is_valid_food_meal(result: dict) -> bool:
+    """Check if the result contains actual food items, not random data."""
+    if result.get("is_valid_meal") is False:
+        return False
+    
+    food_items = result.get("food_items", [])
+    if not food_items or len(food_items) == 0:
+        return False
+    
+    for item in food_items:
+        name = str(item.get("name", "")).lower()
+        if name in ["xyz", "car", "hello", "test", "random", "object", "thing"]:
+            return False
+    
+    return True
 
 
 def _extract_json(raw_text: str) -> dict:
-    # 1. Strip markdown fences
+    """Robustly extract JSON from LLM output."""
     if "```" in raw_text:
         parts = raw_text.split("```")
         for part in parts:
@@ -78,13 +106,11 @@ def _extract_json(raw_text: str) -> dict:
                 raw_text = part
                 break
 
-    # 2. Direct parse
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError:
         pass
 
-    # 3. Extract first {...} block
     match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     if match:
         try:
@@ -92,26 +118,59 @@ def _extract_json(raw_text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # 4. Fix truncated JSON
-    open_braces = raw_text.count('{') - raw_text.count('}')
-    open_brackets = raw_text.count('[') - raw_text.count(']')
-    fixed = raw_text.rstrip() + '}' * open_braces + ']' * open_brackets
     try:
-        return json.loads(fixed)
-    except json.JSONDecodeError:
+        fixed = _fix_truncated_json(raw_text)
+        if fixed:
+            return fixed
+    except Exception:
         pass
 
-    # 5. Fallback to mock
     result = dict(MOCK_RESPONSE)
     result["ai_feedback"] = "AI response could not be parsed. Showing estimated values."
     return result
 
 
+def _fix_truncated_json(text: str) -> dict | None:
+    """Try to salvage truncated JSON by closing open brackets."""
+    open_braces = text.count('{') - text.count('}')
+    open_brackets = text.count('[') - text.count(']')
+
+    text = text.rstrip()
+    text += '}' * open_braces
+    text += ']' * open_brackets
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
 MOCK_RESPONSE = {
     "food_items": [
-        {"name": "egg", "quantity": "2 units", "calories": 155, "protein_g": 13.0, "carbs_g": 1.1, "fat_g": 11.0},
-        {"name": "whole wheat bread", "quantity": "1 slice", "calories": 69, "protein_g": 2.5, "carbs_g": 12.9, "fat_g": 1.0},
-        {"name": "avocado", "quantity": "0.5 medium", "calories": 120, "protein_g": 1.5, "carbs_g": 6.8, "fat_g": 11.0},
+        {
+            "name": "egg",
+            "quantity": "2 units",
+            "calories": 155,
+            "protein_g": 13.0,
+            "carbs_g": 1.1,
+            "fat_g": 11.0,
+        },
+        {
+            "name": "whole wheat bread",
+            "quantity": "1 slice",
+            "calories": 69,
+            "protein_g": 2.5,
+            "carbs_g": 12.9,
+            "fat_g": 1.0,
+        },
+        {
+            "name": "avocado",
+            "quantity": "0.5 medium",
+            "calories": 120,
+            "protein_g": 1.5,
+            "carbs_g": 6.8,
+            "fat_g": 11.0,
+        },
     ],
     "ai_feedback": (
         "This is a well-balanced breakfast with healthy fats from avocado, "
@@ -122,4 +181,5 @@ MOCK_RESPONSE = {
 
 
 async def parse_meal_mock(_meal_description: str) -> dict:
+    """Return a deterministic mock response — no AI call, no API key needed."""
     return MOCK_RESPONSE

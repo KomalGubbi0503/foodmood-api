@@ -7,12 +7,12 @@ from datetime import datetime
 
 # Configuration
 
-API_BASE_URL = "http://127.0.0.1:8000"  # Will be your Render URL
+API_BASE_URL = "https://foodmood-api-ium3.onrender.com"  # Will be your Render URL
 # Fallback to localhost for local testing
 if "localhost" in st.session_state.get("api_url", ""):
     API_BASE_URL = st.session_state.api_url
 else:
-    API_BASE_URL = "http://127.0.0.1:8000"
+    API_BASE_URL = "https://foodmood-api-ium3.onrender.com"
 
 st.set_page_config(
     page_title="🥑 FoodMood",
